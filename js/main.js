@@ -23,10 +23,13 @@
     }
   }
 
-  const imgTag = (src, alt = "") => (src ? `<img src="${src}" alt="${alt.replace(/"/g, "&quot;")}" loading="lazy" />` : "");
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const imgTag = (src, alt = "") => (src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" />` : "");
+  const safeColor = (c) => (/^#[0-9a-fA-F]{3,8}$/.test(c) ? c : "#ccc");
 
   /* ---------- Product card ---------- */
-  function productCard(p, i) {
+  function productCard(raw, i) {
+    const p = { ...raw, name: esc(raw.name), badge: esc(raw.badge), colors: (raw.colors || []).map(safeColor) };
     const swatches = p.colors
       .slice(0, 4)
       .map((c, idx) => `<button class="swatch${idx === 0 ? " is-active" : ""}" style="--c:${c}" aria-label="Màu ${idx + 1}"></button>`)
@@ -66,9 +69,19 @@
 
   const newEl = $("#newArrivals");
   const bestEl = $("#bestSellers");
-  const BEST = window.BEST_SELLERS.map((p) => ({ ...p, bestseller: true }));
-  renderProducts(newEl, window.NEW_ARRIVALS.nam);
-  renderProducts(bestEl, BEST);
+
+  /* Nguồn dữ liệu: mặc định là dữ liệu mẫu trong data.js,
+     backend trả về được thì thay bằng dữ liệu thật từ API. */
+  const store = {
+    newArrivals: { nam: window.NEW_ARRIVALS.nam, nu: window.NEW_ARRIVALS.nu },
+    best: window.BEST_SELLERS.map((p) => ({ ...p, bestseller: true })),
+  };
+  const activeTab = (name) => $(`[data-tabs="${name}"] .tabs__btn.is-active`).dataset.tab;
+  const bestFor = (key) => (key === "all" ? store.best : store.best.filter((p) => p.g === key || p.g === "unisex"));
+  const renderNew = () => renderProducts(newEl, store.newArrivals[activeTab("newArrivals")]);
+  const renderBest = () => renderProducts(bestEl, bestFor(activeTab("bestSellers")));
+  renderNew();
+  renderBest();
 
   /* ---------- Tabs ---------- */
   $$("[data-tabs]").forEach((tabs) => {
@@ -76,11 +89,44 @@
       const btn = e.target.closest(".tabs__btn");
       if (!btn) return;
       $$(".tabs__btn", tabs).forEach((b) => b.classList.toggle("is-active", b === btn));
-      const key = btn.dataset.tab;
-      if (tabs.dataset.tabs === "newArrivals") renderProducts(newEl, window.NEW_ARRIVALS[key]);
-      else renderProducts(bestEl, key === "all" ? BEST : BEST.filter((p) => p.g === key));
+      if (tabs.dataset.tabs === "newArrivals") renderNew();
+      else renderBest();
     });
   });
+
+  /* ---------- Lấy sản phẩm từ backend ---------- */
+  const API = (window.COOLMATE_API || "").replace(/\/$/, "");
+  const vnd = (n) => (n == null ? "" : Number(n).toLocaleString("vi-VN") + "đ");
+  const fromApi = (p) => ({
+    name: p.name,
+    price: vnd(p.price),
+    old: p.oldPrice && p.oldPrice > p.price ? vnd(p.oldPrice) : "",
+    disc: p.discountPercent ? `-${p.discountPercent}%` : "",
+    rating: p.rating != null ? Number(p.rating).toFixed(1) : "",
+    badge: p.badge || "",
+    colors: p.colors || [],
+    more: p.moreColors || 0,
+    img: p.imageUrl ? (p.imageUrl.startsWith("/") ? API + p.imageUrl : p.imageUrl) : "",
+    g: p.gender,
+  });
+  const getProducts = (qs) =>
+    fetch(`${API}/api/products?${qs}&limit=50`).then((r) => (r.ok ? r.json() : Promise.reject(r.status)));
+
+  if (API) {
+    Promise.all([
+      getProducts("section=new&gender=nam"),
+      getProducts("section=new&gender=nu"),
+      getProducts("section=bestseller"),
+    ])
+      .then(([nam, nu, best]) => {
+        store.newArrivals = { nam: nam.items.map(fromApi), nu: nu.items.map(fromApi) };
+        store.best = best.items.map((p) => ({ ...fromApi(p), bestseller: true }));
+        renderNew();
+        renderBest();
+        document.documentElement.dataset.source = "api";
+      })
+      .catch((err) => console.warn("[coolmate] Không gọi được backend, dùng dữ liệu mẫu:", err));
+  }
 
   /* ---------- Collections ---------- */
   $("#collections").innerHTML = window.COLLECTIONS.map(
